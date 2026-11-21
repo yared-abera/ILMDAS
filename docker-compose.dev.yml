@@ -37,7 +37,7 @@ services:
     volumes:
       - ./backend:/app
     ports:
-      - "8010:8010"
+      - "127.0.0.1:8010:8010"
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,7 +55,7 @@ services:
       POSTGRES_PASSWORD: ilmdas # pragma: allowlist secret
       POSTGRES_DB: ilmdas
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - ilmdas_postgres:/var/lib/postgresql/data
     healthcheck:
@@ -71,7 +71,7 @@ services:
       xpack.security.enabled: "false"
       ES_JAVA_OPTS: "-Xms512m -Xmx512m"
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     volumes:
       - ilmdas_elasticsearch:/usr/share/elasticsearch/data
 
@@ -83,8 +83,8 @@ services:
       MINIO_ROOT_USER: ilmdas
       MINIO_ROOT_PASSWORD: ilmdas-local-only # pragma: allowlist secret
     ports:
-      - "9010:9000"
-      - "9011:9001"
+      - "127.0.0.1:9010:9000"
+      - "127.0.0.1:9011:9001"
     volumes:
       - ilmdas_minio:/data
     healthcheck:
@@ -94,7 +94,7 @@ services:
       retries: 12
       start_period: 5s
 
-  # One-shot: create the private app bucket before backend starts.
+  # One-shot: create the private app bucket before backend starts and enable versioning.
   minio-init:
     image: pgsty/mc:latest
     depends_on:
@@ -110,6 +110,7 @@ services:
         mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
         mc mb --ignore-existing local/ilmdas-files
         mc anonymous set none local/ilmdas-files
+        mc version enable local/ilmdas-files
     restart: "no"
 
 volumes:

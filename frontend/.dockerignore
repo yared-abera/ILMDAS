@@ -1,0 +1,30 @@
+# Secrets and environment files
+.env*
+*.env
+
+# Version control
+.git
+.gitignore
+.gitattributes
+.github
+
+# Node / Frontend caches and build artifacts
+node_modules/
+.next/
+out/
+.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test artifacts and reports
+test-results/
+playwright-report/
+coverage/
+
+# OS and IDE files
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo

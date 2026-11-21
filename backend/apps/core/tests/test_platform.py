@@ -165,6 +165,7 @@ def test_object_upload_is_not_anonymously_readable(api_client, django_user_model
     assert denied.data["code"] == "authentication_error"
 
 
+@pytest.mark.django_db
 @pytest.mark.parametrize(
     ("target", "check"),
     [
@@ -173,12 +174,21 @@ def test_object_upload_is_not_anonymously_readable(api_client, django_user_model
         ("apps.core.views.ObjectStorage.health", "objectStorage"),
     ],
 )
-def test_health_fails_when_a_store_is_unreachable(api_client, target, check):
+def test_health_fails_when_a_store_is_unreachable(api_client, django_user_model, target, check):
+    user = django_user_model.objects.create_user(username=f"staff_{check}", password="local-only")
+    api_client.force_authenticate(user)
     with patch(target, return_value={"ok": False, "detail": "unreachable"}):
         response = api_client.get("/api/v1/health/")
     assert response.status_code == 503
     assert response.data["status"] == "failed"
     assert response.data["checks"][check] == {"ok": False, "detail": "unreachable"}
+
+    api_client.force_authenticate(None)
+    with patch(target, return_value={"ok": False, "detail": "unreachable"}):
+        anon_response = api_client.get("/api/v1/health/")
+    assert anon_response.status_code == 503
+    assert anon_response.data == {"status": "failed"}
+    assert "checks" not in anon_response.data
 
 
 def test_iiif_fixture_and_missing_endpoint():
@@ -524,3 +534,134 @@ def test_object_reference_str():
         checksum_sha256="abc",
     )
     assert str(record) == "manuscripts/str"
+
+
+@pytest.mark.django_db
+def test_upload_existing_object_key_returns_conflict_and_preserves_object(
+    api_client, django_user_model
+):
+    user = django_user_model.objects.create_user(username="archivist", password="local-only")
+    api_client.force_authenticate(user)
+    initial_record = ObjectReference.objects.create(
+        object_key="archive/existing/file",
+        reference="s3://ilmdas-files/archive/existing/file",
+        checksum_sha256="original-checksum",
+    )
+    with patch("apps.core.views.ObjectStorage.put_private") as mock_put:
+        response = api_client.post(
+            "/api/v1/storage/objects/",
+            {
+                "objectKey": "archive/existing/file",
+                "bodyBase64": base64.b64encode(b"new-content").decode(),
+            },
+            format="json",
+        )
+        assert response.status_code == 409
+        assert response.data["code"] == "conflict"
+        mock_put.assert_not_called()
+
+    refreshed = ObjectReference.objects.get(pk=initial_record.id)
+    assert refreshed.checksum_sha256 == "original-checksum"
+
+
+@pytest.mark.django_db
+def test_upload_without_object_key_generates_server_key(api_client, django_user_model):
+    user = django_user_model.objects.create_user(username="uploader-auto", password="local-only")
+    api_client.force_authenticate(user)
+    body = b"generated-content"
+    stored = StoredObject(
+        reference="s3://ilmdas-files/archive/auto/123",
+        checksum_sha256=hashlib.sha256(body).hexdigest(),
+        object_key="archive/auto/123",
+    )
+    with patch("apps.core.views.ObjectStorage.put_private", return_value=stored) as mock_put:
+        response = api_client.post(
+            "/api/v1/storage/objects/",
+            {"bodyBase64": base64.b64encode(body).decode()},
+            format="json",
+        )
+        assert response.status_code == 201
+        assert response.data["objectKey"] == "archive/auto/123"
+        called_key = mock_put.call_args[0][0]
+        assert called_key.startswith("archive/")
+
+
+def test_production_settings_hardening():
+    from config.settings import production
+
+    assert production.SECURE_SSL_REDIRECT is True
+    assert production.SECURE_HSTS_SECONDS == 31536000
+    assert production.SECURE_HSTS_INCLUDE_SUBDOMAINS is True
+    assert production.SECURE_HSTS_PRELOAD is False
+    assert production.SECURE_PROXY_SSL_HEADER == ("HTTP_X_FORWARDED_PROTO", "https")
+    assert production.SESSION_COOKIE_SECURE is True
+    assert production.CSRF_COOKIE_SECURE is True
+    assert production.SESSION_COOKIE_AGE == 60 * 60 * 8
+    assert production.SESSION_EXPIRE_AT_BROWSER_CLOSE is True
+    assert production.DEBUG is False
+    assert production.ENVIRONMENT == "production"
+
+
+def test_wsgi_and_asgi_default_to_production():
+    env = os.environ.copy()
+    env.pop("DJANGO_SETTINGS_MODULE", None)
+    env["SECRET_KEY"] = "test-secret"
+    env["DATABASE_URL"] = "postgres://localhost/test"
+    env["ILMDAS_SKIP_ENV_FILE"] = "1"
+    for module in ("config.wsgi", "config.asgi"):
+        cmd = (
+            f"import os; import {module}; from django.conf import settings; "
+            "print(settings.ENVIRONMENT, settings.DEBUG)"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", cmd],
+            cwd=BACKEND_DIR,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert "production False" in result.stdout
+
+
+def test_production_settings_reject_debug_env():
+    env = os.environ.copy()
+    env["DJANGO_SETTINGS_MODULE"] = "config.settings.production"
+    env["DEBUG"] = "1"
+    env["SECRET_KEY"] = "test-secret"
+    env["DATABASE_URL"] = "postgres://localhost/test"
+    env["ILMDAS_SKIP_ENV_FILE"] = "1"
+    result = subprocess.run(
+        [sys.executable, "-c", "import config.settings.production"],
+        cwd=BACKEND_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "DEBUG cannot be enabled in production" in result.stderr
+
+
+@pytest.mark.django_db
+def test_contract_probes_return_404_in_production(api_client, settings):
+    settings.ENVIRONMENT = "production"
+    for path in [
+        "/api/v1/contract/validation/",
+        "/api/v1/contract/session/",
+        "/api/v1/contract/errors/",
+    ]:
+        res = api_client.get(path)
+        assert res.status_code == 404
+    post_res = api_client.post("/api/v1/contract/validation/", {"name": "test"}, format="json")
+    assert post_res.status_code == 404
+
+
+@pytest.mark.django_db
+def test_anonymous_health_returns_only_overall_status(api_client):
+    response = api_client.get("/api/v1/health/")
+    assert response.status_code == 200
+    assert response.data == {"status": "ok"}
+    assert "checks" not in response.data
+

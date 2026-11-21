@@ -14,6 +14,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+RUN groupadd --gid 1001 django && useradd --uid 1001 --gid django -m django \
+    && mkdir -p /app && chown -R django:django /app
+
 WORKDIR /app
 
 COPY requirements/ requirements/
@@ -23,6 +26,8 @@ ENV PIP_DEFAULT_TIMEOUT=100 \
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir --retries 10 --timeout 100 \
        -r requirements/development.txt
+
+USER django
 
 # Source is bind-mounted at runtime (./backend:/app).
 EXPOSE 8010

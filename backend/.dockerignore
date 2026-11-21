@@ -1,0 +1,33 @@
+# Secrets and environment files
+.env*
+*.env
+
+# Version control
+.git
+.gitignore
+.gitattributes
+.github
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+coverage.xml
+htmlcov/
+*.sqlite3
+
+# Test artifacts and reports
+test-results/
+
+# OS and IDE files
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
